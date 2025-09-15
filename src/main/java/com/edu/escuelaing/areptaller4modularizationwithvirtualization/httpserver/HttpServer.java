@@ -20,8 +20,8 @@ import java.util.concurrent.TimeUnit;
  */
 public class HttpServer {
     
-    public static Map<String, Method> services = new HashMap<>();
-    private static final String directory = "src/main/java/com/edu/escuelaing/ArepTaller4modularizationWithVirtualization/httpserver/resources";
+    private static int port = 35000;
+    public static final Map<String, Method> services = new HashMap<>();
     private static volatile boolean running = true;
     private static final ExecutorService executorService = Executors.newCachedThreadPool();
 
@@ -47,58 +47,73 @@ public class HttpServer {
         loadServices();
         ServerSocket serverSocket = null;
         try {
-            serverSocket = new ServerSocket(35000);
+            serverSocket = new ServerSocket(port);
         } catch (IOException e) {
-            System.err.println("Could not listen on port: 35000.");
+            System.err.println("Could not listen on port: " + port);
             System.exit(1);
         }
-        Socket clientSocket = null;
 
         boolean running = true;
         while (running) {
             try {
                 System.out.println("Listo para recibir ...");
-                clientSocket = serverSocket.accept();
-
-                PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
-                BufferedReader in = new BufferedReader(
-                        new InputStreamReader(
-                                clientSocket.getInputStream()));
-                String inputLine, outputLine;
-
-                String path = null;
-                boolean firstline = true;
-                URI requri = null;
-
-                while ((inputLine = in.readLine()) != null) {
-                    if (firstline) {
-                        requri = new URI(inputLine.split(" ")[1]);
-                        System.out.println("Path: " + requri.getPath());
-                        firstline = false;
-                    }
-                    System.out.println("Received: " + inputLine);
-                    if (!in.ready()) {
-                        break;
-                    }
-                }
-
-                if (requri.getPath().startsWith("/app")) {
-                    outputLine = invokeService(requri, out);
-                    out.println(outputLine);
-                } else {
-                    // Pasamos PrintWriter y OutputStream
-                    serveStaticFile(requri.getPath(), out, clientSocket.getOutputStream());
-                }
-
-                out.close();
-                in.close();
+                Socket clientSocket = serverSocket.accept();
+                executorService.submit(() -> handleRequestClient(clientSocket));
             } catch (IOException e) {
                 System.err.println("Accept failed.");
                 System.exit(1);
             }
-            clientSocket.close();
         }
         serverSocket.close();
+    }
+    
+    
+    public static void handleRequestClient(Socket clientSocket){
+        PrintWriter out;
+        try {
+            out = new PrintWriter(clientSocket.getOutputStream(), true);
+            BufferedReader in = new BufferedReader(
+            new InputStreamReader(
+                clientSocket.getInputStream()));
+            String inputLine, outputLine;
+
+            String path = null;
+            boolean firstline = true;
+            URI requri = null;
+
+            while ((inputLine = in.readLine()) != null) {
+                if (firstline) {
+                    requri = new URI(inputLine.split(" ")[1]);
+                    System.out.println("Path: " + requri.getPath());
+                    firstline = false;
+                }
+                System.out.println("Received: " + inputLine);
+                if (!in.ready()) {
+                    break;
+                }
+            }
+
+            if (requri.getPath().startsWith("/app")) {
+                outputLine = invokeService(requri, out);
+                out.println(outputLine);
+            } else {
+                serveStaticFile(requri.getPath(), out, clientSocket.getOutputStream());
+            }
+
+            out.close();
+            in.close();
+            
+        } catch (IOException ex) {
+            System.getLogger(HttpServer.class.getName()).log(System.Logger.Level.ERROR, (String) null, ex);
+        } catch (URISyntaxException ex) {
+            System.getLogger(HttpServer.class.getName()).log(System.Logger.Level.ERROR, (String) null, ex);
+        } finally {
+            try {
+                clientSocket.close();
+            } catch (IOException e) {
+                System.err.println("Error al cerrar el socket: " + e.getMessage());
+            }
+        }
     }
 
     public static void stopServer() {
@@ -132,7 +147,9 @@ public class HttpServer {
             path = "/index.html";
         }
 
-        File file = new File(directory + path);
+        String baseDir = MainStart.getStaticFilesDirectory();
+        File file = new File(MainStart.getStaticFilesDirectory(), path);
+        System.out.println("Buscando archivo: " + file.getAbsolutePath());
         if (!file.exists() || file.isDirectory()) {
             out.println(error404());
             return;
@@ -142,19 +159,16 @@ public class HttpServer {
             byte[] fileContent = Files.readAllBytes(file.toPath());
             String contentType = getContentType(path);
 
-            // --- Cabecera HTTP ---
             String header = "HTTP/1.1 200 OK\r\n" +
                     "Content-Type: " + contentType + "\r\n" +
                     "Content-Length: " + fileContent.length + "\r\n" +
                     "\r\n";
 
-            // --- Si es imagen/binario ---
             if (contentType.startsWith("image/")) {
                 rawOut.write(header.getBytes());
                 rawOut.write(fileContent);
                 rawOut.flush();
             } else {
-                // --- Si es texto (html, css, js, etc.) ---
                 out.println(header);
                 out.println(new String(fileContent));
                 out.flush();
